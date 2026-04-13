@@ -3,6 +3,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { signup, login } from './api/auth';
+import { api } from './api/api';
 import { createCheckin, getCheckins } from './api/checkins';
 import { createBooking, getBookings } from './api/bookings';
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts';
@@ -255,16 +256,14 @@ const adminLogin = async (username, password) => {
   setAdminError('');
   setAdminLoading(true);
 
-  const response = await fetch('/api/admin/stress-records', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password })
-  });
-
-  const data = await response.json();
-
-  if (!response.ok) {
-    setAdminError(data.error || 'Invalid credentials');
+  let data;
+  try {
+    data = await api('/api/admin/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password })
+    });
+  } catch (err) {
+    setAdminError(err.message || 'Invalid credentials');
     setAdminLoading(false);
     return;
   }
