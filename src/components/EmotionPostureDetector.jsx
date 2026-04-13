@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import * as tf from '@tensorflow/tfjs';
 import * as faceLandmarksDetection from '@tensorflow-models/face-landmarks-detection';
 import * as poseDetection from '@tensorflow-models/pose-detection';
@@ -91,6 +91,7 @@ const EmotionPostureDetector = ({ videoRef, enabled = false, onPrediction = () =
       if (faceDetectorRef.current && faceDetectorRef.current.dispose) faceDetectorRef.current.dispose();
       if (poseDetectorRef.current && poseDetectorRef.current.dispose) poseDetectorRef.current.dispose();
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [videoRef, enabled, onPrediction]);
 
 
