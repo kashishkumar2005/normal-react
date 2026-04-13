@@ -12,6 +12,136 @@ import StudentReport from './pages/StudentReport';
 import StressMonitor from './pages/StressMonitor';
 import StressAnalytics from './pages/StressAnalytics';
 
+const getStressLevelFromIntensity = (intensity) => {
+  if (!Number.isFinite(intensity)) return 'Unknown';
+  if (intensity <= 30) return 'Low';
+  if (intensity <= 60) return 'Moderate';
+  return 'High';
+};
+
+const toNumericValue = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const parseCsvLine = (line) => {
+  const values = [];
+  let current = '';
+  let insideQuotes = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+
+    if (character === '"') {
+      if (insideQuotes && line[index + 1] === '"') {
+        current += '"';
+        index += 1;
+      } else {
+        insideQuotes = !insideQuotes;
+      }
+    } else if (character === ',' && !insideQuotes) {
+      values.push(current);
+      current = '';
+    } else {
+      current += character;
+    }
+  }
+
+  values.push(current);
+  return values;
+};
+
+const parseCsvRecords = (csvText) => {
+  const lines = csvText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length < 2) {
+    return [];
+  }
+
+  const headers = parseCsvLine(lines[0]);
+
+  return lines.slice(1).map((line) => {
+    const values = parseCsvLine(line);
+    return headers.reduce((record, header, index) => {
+      record[header] = values[index] ?? '';
+      return record;
+    }, {});
+  });
+};
+
+const normalizeAdminRecord = (entry, index, sourceName) => {
+  const numericIntensity =
+    toNumericValue(entry.expectedIntensity) ??
+    toNumericValue(entry.expected?.stressLevel) ??
+    toNumericValue(entry.expectedStressLevel) ??
+    toNumericValue(entry.score) ??
+    toNumericValue(entry.stress) ??
+    0;
+
+  const levelLabel =
+    entry.expectedStressLevel ||
+    entry.expected?.intensity ||
+    entry.expectedIntensity ||
+    entry.intensity ||
+    getStressLevelFromIntensity(numericIntensity);
+
+  return {
+    ...entry,
+    id: entry.id || entry._id || entry.record_id || `${sourceName}-${index}`,
+    user: entry.user || entry.email || entry.username || sourceName,
+    timestamp: entry.timestamp || new Date().toISOString(),
+    expectedIntensity: numericIntensity,
+    expectedStressLevel: levelLabel
+  };
+};
+
+const buildAdminStats = (records) => {
+  if (!records.length) {
+    return {
+      total: 0,
+      avgIntensity: 0,
+      minIntensity: 0,
+      maxIntensity: 0,
+      trend: 'No data',
+      byLevel: {}
+    };
+  }
+
+  const intensities = records
+    .map((record) => Number(record.expectedIntensity))
+    .filter((value) => Number.isFinite(value));
+
+  const byLevel = records.reduce((accumulator, record) => {
+    const level = record.expectedStressLevel || 'Unknown';
+    accumulator[level] = (accumulator[level] || 0) + 1;
+    return accumulator;
+  }, {});
+
+  const avgIntensity = intensities.length
+    ? Number((intensities.reduce((sum, value) => sum + value, 0) / intensities.length).toFixed(1))
+    : 0;
+
+  let trend = 'Stable';
+  if (intensities.length >= 2) {
+    const first = intensities[0];
+    const last = intensities[intensities.length - 1];
+    if (last - first >= 8) trend = 'Rising';
+    else if (first - last >= 8) trend = 'Improving';
+  }
+
+  return {
+    total: records.length,
+    avgIntensity,
+    minIntensity: intensities.length ? Math.min(...intensities) : 0,
+    maxIntensity: intensities.length ? Math.max(...intensities) : 0,
+    trend,
+    byLevel
+  };
+};
+
 
 export default function App() {
   const [view, setView] = useState('login');
@@ -73,136 +203,6 @@ export default function App() {
     });
     return Object.entries(users).map(([user, records]) => ({ user, records }));
   }, [adminRecords]);
-
-  const getStressLevelFromIntensity = (intensity) => {
-    if (!Number.isFinite(intensity)) return 'Unknown';
-    if (intensity <= 30) return 'Low';
-    if (intensity <= 60) return 'Moderate';
-    return 'High';
-  };
-
-  const toNumericValue = (value) => {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  };
-
-  const parseCsvLine = (line) => {
-    const values = [];
-    let current = '';
-    let insideQuotes = false;
-
-    for (let index = 0; index < line.length; index += 1) {
-      const character = line[index];
-
-      if (character === '"') {
-        if (insideQuotes && line[index + 1] === '"') {
-          current += '"';
-          index += 1;
-        } else {
-          insideQuotes = !insideQuotes;
-        }
-      } else if (character === ',' && !insideQuotes) {
-        values.push(current);
-        current = '';
-      } else {
-        current += character;
-      }
-    }
-
-    values.push(current);
-    return values;
-  };
-
-  const parseCsvRecords = (csvText) => {
-    const lines = csvText
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-
-    if (lines.length < 2) {
-      return [];
-    }
-
-    const headers = parseCsvLine(lines[0]);
-
-    return lines.slice(1).map((line) => {
-      const values = parseCsvLine(line);
-      return headers.reduce((record, header, index) => {
-        record[header] = values[index] ?? '';
-        return record;
-      }, {});
-    });
-  };
-
-  const normalizeAdminRecord = (entry, index, sourceName) => {
-    const numericIntensity =
-      toNumericValue(entry.expectedIntensity) ??
-      toNumericValue(entry.expected?.stressLevel) ??
-      toNumericValue(entry.expectedStressLevel) ??
-      toNumericValue(entry.score) ??
-      toNumericValue(entry.stress) ??
-      0;
-
-    const levelLabel =
-      entry.expectedStressLevel ||
-      entry.expected?.intensity ||
-      entry.expectedIntensity ||
-      entry.intensity ||
-      getStressLevelFromIntensity(numericIntensity);
-
-    return {
-      ...entry,
-      id: entry.id || entry._id || entry.record_id || `${sourceName}-${index}`,
-      user: entry.user || entry.email || entry.username || sourceName,
-      timestamp: entry.timestamp || new Date().toISOString(),
-      expectedIntensity: numericIntensity,
-      expectedStressLevel: levelLabel
-    };
-  };
-
-  const buildAdminStats = (records) => {
-    if (!records.length) {
-      return {
-        total: 0,
-        avgIntensity: 0,
-        minIntensity: 0,
-        maxIntensity: 0,
-        trend: 'No data',
-        byLevel: {}
-      };
-    }
-
-    const intensities = records
-      .map((record) => Number(record.expectedIntensity))
-      .filter((value) => Number.isFinite(value));
-
-    const byLevel = records.reduce((accumulator, record) => {
-      const level = record.expectedStressLevel || 'Unknown';
-      accumulator[level] = (accumulator[level] || 0) + 1;
-      return accumulator;
-    }, {});
-
-    const avgIntensity = intensities.length
-      ? Number((intensities.reduce((sum, value) => sum + value, 0) / intensities.length).toFixed(1))
-      : 0;
-
-    let trend = 'Stable';
-    if (intensities.length >= 2) {
-      const first = intensities[0];
-      const last = intensities[intensities.length - 1];
-      if (last - first >= 8) trend = 'Rising';
-      else if (first - last >= 8) trend = 'Improving';
-    }
-
-    return {
-      total: records.length,
-      avgIntensity,
-      minIntensity: intensities.length ? Math.min(...intensities) : 0,
-      maxIntensity: intensities.length ? Math.max(...intensities) : 0,
-      trend,
-      byLevel
-    };
-  };
 
   const loadAdminDemoData = useCallback(() => {
     let storedHistory = [];
