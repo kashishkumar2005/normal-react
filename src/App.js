@@ -1,9 +1,8 @@
 // App.js - SkillPulse without Tailwind
 // Uses custom CSS classes from index.css
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { signup, login } from './api/auth';
-import { api } from './api/api';
 import { createCheckin, getCheckins } from './api/checkins';
 import { createBooking, getBookings } from './api/bookings';
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts';
@@ -36,8 +35,8 @@ export default function App() {
   const [showShareModal, setShowShareModal] = useState(false);
   const [animateScore, setAnimateScore] = useState(false);
 
-  // Admin view state (hardcoded credentials)
-  const [, setIsAdminAuthenticated] = useState(false);
+  // Admin demo view state
+  const [isAdminDemoEnabled, setIsAdminDemoEnabled] = useState(() => localStorage.getItem('skillpulse-admin-demo') === 'true');
   const [adminError, setAdminError] = useState('');
   const [adminRecords, setAdminRecords] = useState([]);
   const [adminStats, setAdminStats] = useState(null);
@@ -74,6 +73,82 @@ export default function App() {
     return Object.entries(users).map(([user, records]) => ({ user, records }));
   }, [adminRecords]);
 
+  const getStressLevelFromIntensity = (intensity) => {
+    if (!Number.isFinite(intensity)) return 'Unknown';
+    if (intensity <= 30) return 'Low';
+    if (intensity <= 60) return 'Moderate';
+    return 'High';
+  };
+
+  const buildAdminStats = (records) => {
+    if (!records.length) {
+      return {
+        total: 0,
+        avgIntensity: 0,
+        minIntensity: 0,
+        maxIntensity: 0,
+        trend: 'No data',
+        byLevel: {}
+      };
+    }
+
+    const intensities = records
+      .map((record) => Number(record.expectedIntensity))
+      .filter((value) => Number.isFinite(value));
+
+    const byLevel = records.reduce((accumulator, record) => {
+      const level = record.expectedStressLevel || 'Unknown';
+      accumulator[level] = (accumulator[level] || 0) + 1;
+      return accumulator;
+    }, {});
+
+    const avgIntensity = intensities.length
+      ? Number((intensities.reduce((sum, value) => sum + value, 0) / intensities.length).toFixed(1))
+      : 0;
+
+    let trend = 'Stable';
+    if (intensities.length >= 2) {
+      const first = intensities[0];
+      const last = intensities[intensities.length - 1];
+      if (last - first >= 8) trend = 'Rising';
+      else if (first - last >= 8) trend = 'Improving';
+    }
+
+    return {
+      total: records.length,
+      avgIntensity,
+      minIntensity: intensities.length ? Math.min(...intensities) : 0,
+      maxIntensity: intensities.length ? Math.max(...intensities) : 0,
+      trend,
+      byLevel
+    };
+  };
+
+  const loadAdminDemoData = useCallback(() => {
+    let storedHistory = [];
+    try {
+      storedHistory = JSON.parse(localStorage.getItem('skillpulse-history')) || [];
+    } catch (error) {
+      storedHistory = [];
+    }
+
+    const currentUser = localStorage.getItem('skillpulse-current-user') || user || 'Demo User';
+    const records = storedHistory.map((entry, index) => {
+      const expectedIntensity = Number(entry.expectedIntensity ?? entry.score ?? entry.stress ?? 0);
+      return {
+        ...entry,
+        id: entry.id || entry._id || `${currentUser}-${index}`,
+        user: entry.user || entry.email || entry.username || currentUser,
+        timestamp: entry.timestamp || new Date().toISOString(),
+        expectedIntensity,
+        expectedStressLevel: entry.expectedStressLevel || getStressLevelFromIntensity(expectedIntensity)
+      };
+    });
+
+    setAdminRecords(records);
+    setAdminStats(buildAdminStats(records));
+  }, [user]);
+
   useEffect(() => {
     const saved = localStorage.getItem('skillpulse-history');
     const hasVisited = localStorage.getItem('skillpulse-visited');
@@ -102,7 +177,11 @@ export default function App() {
     if (savedSound !== null) {
       setSoundEnabled(savedSound === 'true');
     }
-  }, []);
+
+    if (localStorage.getItem('skillpulse-admin-demo') === 'true') {
+      loadAdminDemoData();
+    }
+  }, [loadAdminDemoData]);
 
   // fetch remote data when authenticated
   useEffect(() => {
@@ -252,31 +331,25 @@ const handleLogout = () => {
   setView("login");
 };
 
-const adminLogin = async (username, password) => {
+const enterAdminDemo = async () => {
   setAdminError('');
   setAdminLoading(true);
-
-  let data;
   try {
-    data = await api('/api/admin/login', {
-      method: 'POST',
-      body: JSON.stringify({ username, password })
-    });
+    loadAdminDemoData();
+    localStorage.setItem('skillpulse-admin-demo', 'true');
+    setIsAdminDemoEnabled(true);
+    setView('admin');
   } catch (err) {
-    setAdminError(err.message || 'Invalid credentials');
+    setAdminError(err.message || 'Could not open demo dashboard');
     setAdminLoading(false);
     return;
   }
-
-  setAdminRecords(data.records || []);
-  setAdminStats(data.stats || null);
-  setIsAdminAuthenticated(true);
-  setView('admin');
   setAdminLoading(false);
 };
 
 const adminLogout = () => {
-  setIsAdminAuthenticated(false);
+  localStorage.removeItem('skillpulse-admin-demo');
+  setIsAdminDemoEnabled(false);
   setAdminRecords([]);
   setAdminStats(null);
   setAdminError('');
@@ -581,7 +654,7 @@ const cancelBooking = (bookingId) => {
             style={{ marginTop: '1rem' }}
             onClick={() => setView('admin-login')}
           >
-            👨‍💼 Admin Login
+            👨‍💼 Admin Demo
           </button>
 
           <p className="auth-switch">
@@ -598,21 +671,17 @@ const cancelBooking = (bookingId) => {
       <div className="auth-container">
         <div className="auth-card">
           <Brain size={56} />
-          <h2>Admin Login</h2>
-          <p>Enter admin credentials to access reports</p>
-          <input id="admin-username" placeholder="Username" />
-          <input id="admin-password" type="password" placeholder="Password" />
+          <h2>Admin Demo</h2>
+          <p>Open a frontend-only demo dashboard using records stored in this browser.</p>
+          <div className="error" style={{ marginBottom: '1rem', background: '#fff7ed', color: '#9a3412', border: '1px solid #fdba74' }}>
+            Demo only. This is not secure authentication and should not be treated as production admin access.
+          </div>
           <button
             className="btn btn-primary btn-full"
-            onClick={() =>
-              adminLogin(
-                document.getElementById("admin-username").value,
-                document.getElementById("admin-password").value
-              )
-            }
+            onClick={enterAdminDemo}
             disabled={adminLoading}
           >
-            {adminLoading ? "Logging in..." : "Login"}
+            {adminLoading ? "Opening demo..." : "Open Admin Demo"}
           </button>
           {adminError && <div className="error">{adminError}</div>}
           <button
@@ -644,7 +713,12 @@ const cancelBooking = (bookingId) => {
     return (
       <div className="admin-container" style={{maxWidth: 1100, margin: '40px auto', padding: 24}}>
         <div className="admin-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'2rem'}}>
-          <h2 style={{fontSize: '2.2rem', fontWeight: 700, letterSpacing: '-1px'}}>Admin Dashboard</h2>
+          <div>
+            <h2 style={{fontSize: '2.2rem', fontWeight: 700, letterSpacing: '-1px', marginBottom: 6}}>Admin Dashboard</h2>
+            <div style={{color:'#9a3412',fontSize:'0.95rem',fontWeight:600}}>
+              Demo mode {isAdminDemoEnabled ? 'enabled' : 'disabled'}: showing browser-stored data only.
+            </div>
+          </div>
           <button className="btn btn-secondary" onClick={adminLogout}>Logout</button>
         </div>
         {/* Summary Cards */}
