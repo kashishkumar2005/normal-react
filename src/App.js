@@ -220,7 +220,44 @@ export default function App() {
     setAdminRecords(records);
     setAdminStats(buildAdminStats(records));
     setAdminDatasetName('Current browser records');
+    return records.length > 0;
   }, [user]);
+
+  const loadBundledAdminData = useCallback(async () => {
+    const publicBase = process.env.PUBLIC_URL || '';
+    const datasetFiles = [
+      { name: 'stress_detection_dataset.json', type: 'json' },
+      { name: 'stress_detection_dataset.csv', type: 'csv' }
+    ];
+
+    for (const datasetFile of datasetFiles) {
+      try {
+        const response = await fetch(`${publicBase}/${datasetFile.name}`);
+        if (!response.ok) {
+          continue;
+        }
+
+        const rawRecords = datasetFile.type === 'json'
+          ? await response.json()
+          : parseCsvRecords(await response.text());
+
+        if (!Array.isArray(rawRecords) || rawRecords.length === 0) {
+          continue;
+        }
+
+        const sourceName = datasetFile.name.replace(/\.[^.]+$/, '');
+        const normalizedRecords = rawRecords.map((entry, index) => normalizeAdminRecord(entry, index, sourceName));
+        setAdminRecords(normalizedRecords);
+        setAdminStats(buildAdminStats(normalizedRecords));
+        setAdminDatasetName(datasetFile.name);
+        return true;
+      } catch (error) {
+        continue;
+      }
+    }
+
+    return false;
+  }, []);
 
   const loadStoredAdminImport = useCallback(() => {
     try {
@@ -283,7 +320,7 @@ export default function App() {
     const savedSound = localStorage.getItem('skillpulse-sound');
     const loggedInUser = localStorage.getItem('skillpulse-current-user');
     const loggedInRole = localStorage.getItem('skillpulse-current-role');
-    
+
     if (saved) {
       try {
         setHistory(JSON.parse(saved));
@@ -306,11 +343,17 @@ export default function App() {
     }
 
     if (localStorage.getItem('skillpulse-admin-demo') === 'true') {
-      if (!loadStoredAdminImport()) {
+      (async () => {
+        if (await loadBundledAdminData()) {
+          return;
+        }
+        if (loadStoredAdminImport()) {
+          return;
+        }
         loadAdminDemoData();
-      }
+      })();
     }
-  }, [loadAdminDemoData, loadStoredAdminImport]);
+  }, [loadAdminDemoData, loadBundledAdminData, loadStoredAdminImport]);
 
   // fetch remote data when authenticated
   useEffect(() => {
@@ -464,14 +507,14 @@ const enterAdminDemo = async () => {
   setAdminError('');
   setAdminLoading(true);
   try {
-    if (!loadStoredAdminImport()) {
-      loadAdminDemoData();
+    if (!(await loadBundledAdminData()) && !loadStoredAdminImport() && !loadAdminDemoData()) {
+      throw new Error('No dataset available for the dashboard');
     }
     localStorage.setItem('skillpulse-admin-demo', 'true');
     setIsAdminDemoEnabled(true);
     setView('admin');
   } catch (err) {
-    setAdminError(err.message || 'Could not open demo dashboard');
+    setAdminError(err.message || 'Could not open dashboard');
     setAdminLoading(false);
     return;
   }
