@@ -36,11 +36,12 @@ export default function App() {
   const [animateScore, setAnimateScore] = useState(false);
 
   // Admin demo view state
-  const [isAdminDemoEnabled, setIsAdminDemoEnabled] = useState(() => localStorage.getItem('skillpulse-admin-demo') === 'true');
+  const [, setIsAdminDemoEnabled] = useState(() => localStorage.getItem('skillpulse-admin-demo') === 'true');
   const [adminError, setAdminError] = useState('');
   const [adminRecords, setAdminRecords] = useState([]);
   const [adminStats, setAdminStats] = useState(null);
   const [adminLoading, setAdminLoading] = useState(false);
+  const [adminDatasetName, setAdminDatasetName] = useState(() => localStorage.getItem('skillpulse-admin-dataset-name') || 'Current browser records');
 
   // Mentoring states
   const [mentors] = useState([
@@ -78,6 +79,85 @@ export default function App() {
     if (intensity <= 30) return 'Low';
     if (intensity <= 60) return 'Moderate';
     return 'High';
+  };
+
+  const toNumericValue = (value) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  const parseCsvLine = (line) => {
+    const values = [];
+    let current = '';
+    let insideQuotes = false;
+
+    for (let index = 0; index < line.length; index += 1) {
+      const character = line[index];
+
+      if (character === '"') {
+        if (insideQuotes && line[index + 1] === '"') {
+          current += '"';
+          index += 1;
+        } else {
+          insideQuotes = !insideQuotes;
+        }
+      } else if (character === ',' && !insideQuotes) {
+        values.push(current);
+        current = '';
+      } else {
+        current += character;
+      }
+    }
+
+    values.push(current);
+    return values;
+  };
+
+  const parseCsvRecords = (csvText) => {
+    const lines = csvText
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    if (lines.length < 2) {
+      return [];
+    }
+
+    const headers = parseCsvLine(lines[0]);
+
+    return lines.slice(1).map((line) => {
+      const values = parseCsvLine(line);
+      return headers.reduce((record, header, index) => {
+        record[header] = values[index] ?? '';
+        return record;
+      }, {});
+    });
+  };
+
+  const normalizeAdminRecord = (entry, index, sourceName) => {
+    const numericIntensity =
+      toNumericValue(entry.expectedIntensity) ??
+      toNumericValue(entry.expected?.stressLevel) ??
+      toNumericValue(entry.expectedStressLevel) ??
+      toNumericValue(entry.score) ??
+      toNumericValue(entry.stress) ??
+      0;
+
+    const levelLabel =
+      entry.expectedStressLevel ||
+      entry.expected?.intensity ||
+      entry.expectedIntensity ||
+      entry.intensity ||
+      getStressLevelFromIntensity(numericIntensity);
+
+    return {
+      ...entry,
+      id: entry.id || entry._id || entry.record_id || `${sourceName}-${index}`,
+      user: entry.user || entry.email || entry.username || sourceName,
+      timestamp: entry.timestamp || new Date().toISOString(),
+      expectedIntensity: numericIntensity,
+      expectedStressLevel: levelLabel
+    };
   };
 
   const buildAdminStats = (records) => {
@@ -134,20 +214,67 @@ export default function App() {
 
     const currentUser = localStorage.getItem('skillpulse-current-user') || user || 'Demo User';
     const records = storedHistory.map((entry, index) => {
-      const expectedIntensity = Number(entry.expectedIntensity ?? entry.score ?? entry.stress ?? 0);
-      return {
-        ...entry,
-        id: entry.id || entry._id || `${currentUser}-${index}`,
-        user: entry.user || entry.email || entry.username || currentUser,
-        timestamp: entry.timestamp || new Date().toISOString(),
-        expectedIntensity,
-        expectedStressLevel: entry.expectedStressLevel || getStressLevelFromIntensity(expectedIntensity)
-      };
+      return normalizeAdminRecord(entry, index, currentUser);
     });
 
     setAdminRecords(records);
     setAdminStats(buildAdminStats(records));
+    setAdminDatasetName('Current browser records');
   }, [user]);
+
+  const loadStoredAdminImport = useCallback(() => {
+    try {
+      const storedImport = JSON.parse(localStorage.getItem('skillpulse-admin-import'));
+      if (!Array.isArray(storedImport) || storedImport.length === 0) {
+        return false;
+      }
+
+      setAdminRecords(storedImport);
+      setAdminStats(buildAdminStats(storedImport));
+      setAdminDatasetName(localStorage.getItem('skillpulse-admin-dataset-name') || 'Imported dataset');
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }, []);
+
+  const importAdminDataset = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    setAdminError('');
+    setAdminLoading(true);
+
+    try {
+      const text = await file.text();
+      const rawRecords = file.name.toLowerCase().endsWith('.csv')
+        ? parseCsvRecords(text)
+        : JSON.parse(text);
+
+      if (!Array.isArray(rawRecords) || rawRecords.length === 0) {
+        throw new Error('The selected dataset is empty.');
+      }
+
+      const sourceName = file.name.replace(/\.[^.]+$/, '');
+      const normalizedRecords = rawRecords.map((entry, index) => normalizeAdminRecord(entry, index, sourceName));
+
+      setAdminRecords(normalizedRecords);
+      setAdminStats(buildAdminStats(normalizedRecords));
+      setAdminDatasetName(file.name);
+      localStorage.setItem('skillpulse-admin-import', JSON.stringify(normalizedRecords));
+      localStorage.setItem('skillpulse-admin-dataset-name', file.name);
+      localStorage.setItem('skillpulse-admin-demo', 'true');
+      setIsAdminDemoEnabled(true);
+      setView('admin');
+    } catch (error) {
+      setAdminError(error.message || 'Could not read the selected dataset');
+    } finally {
+      event.target.value = '';
+      setAdminLoading(false);
+    }
+  };
 
   useEffect(() => {
     const saved = localStorage.getItem('skillpulse-history');
@@ -179,9 +306,11 @@ export default function App() {
     }
 
     if (localStorage.getItem('skillpulse-admin-demo') === 'true') {
-      loadAdminDemoData();
+      if (!loadStoredAdminImport()) {
+        loadAdminDemoData();
+      }
     }
-  }, [loadAdminDemoData]);
+  }, [loadAdminDemoData, loadStoredAdminImport]);
 
   // fetch remote data when authenticated
   useEffect(() => {
@@ -335,7 +464,9 @@ const enterAdminDemo = async () => {
   setAdminError('');
   setAdminLoading(true);
   try {
-    loadAdminDemoData();
+    if (!loadStoredAdminImport()) {
+      loadAdminDemoData();
+    }
     localStorage.setItem('skillpulse-admin-demo', 'true');
     setIsAdminDemoEnabled(true);
     setView('admin');
@@ -654,7 +785,7 @@ const cancelBooking = (bookingId) => {
             style={{ marginTop: '1rem' }}
             onClick={() => setView('admin-login')}
           >
-            👨‍💼 Admin Demo
+            👨‍💼 Admin Access
           </button>
 
           <p className="auth-switch">
@@ -671,18 +802,22 @@ const cancelBooking = (bookingId) => {
       <div className="auth-container">
         <div className="auth-card">
           <Brain size={56} />
-          <h2>Admin Demo</h2>
-          <p>Open a frontend-only demo dashboard using records stored in this browser.</p>
-          <div className="error" style={{ marginBottom: '1rem', background: '#fff7ed', color: '#9a3412', border: '1px solid #fdba74' }}>
-            Demo only. This is not secure authentication and should not be treated as production admin access.
-          </div>
+          <h2>Admin Access</h2>
+          <p>Open analytics using current records or import a CSV/JSON dataset.</p>
           <button
             className="btn btn-primary btn-full"
             onClick={enterAdminDemo}
             disabled={adminLoading}
           >
-            {adminLoading ? "Opening demo..." : "Open Admin Demo"}
+            {adminLoading ? "Opening..." : "Open Dashboard"}
           </button>
+          <label className="btn btn-secondary btn-full" style={{ marginTop: '1rem', display: 'block', textAlign: 'center', cursor: 'pointer' }}>
+            Import CSV / JSON
+            <input type="file" accept=".csv,.json,application/json,text/csv" style={{ display: 'none' }} onChange={importAdminDataset} />
+          </label>
+          <div style={{ marginTop: '0.75rem', color: '#64748b', fontSize: '0.95rem' }}>
+            Data source: {adminDatasetName}
+          </div>
           {adminError && <div className="error">{adminError}</div>}
           <button
             className="btn btn-secondary btn-full"
@@ -715,8 +850,8 @@ const cancelBooking = (bookingId) => {
         <div className="admin-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'2rem'}}>
           <div>
             <h2 style={{fontSize: '2.2rem', fontWeight: 700, letterSpacing: '-1px', marginBottom: 6}}>Admin Dashboard</h2>
-            <div style={{color:'#9a3412',fontSize:'0.95rem',fontWeight:600}}>
-              Demo mode {isAdminDemoEnabled ? 'enabled' : 'disabled'}: showing browser-stored data only.
+            <div style={{color:'#64748b',fontSize:'0.95rem',fontWeight:600}}>
+              Data source: {adminDatasetName}
             </div>
           </div>
           <button className="btn btn-secondary" onClick={adminLogout}>Logout</button>
